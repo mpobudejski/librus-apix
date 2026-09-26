@@ -23,13 +23,19 @@ my_client = Client(token=my_token)
 
 from typing import Dict, Optional
 
-from requests import Session
+from requests import RequestException, Session
 from requests.models import Response
 from requests.sessions import RequestsCookieJar
 from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 
 import librus_apix.urls as urls
-from librus_apix.exceptions import AuthorizationError, MaintananceError, TokenKeyError
+from librus_apix.exceptions import (
+    AccessDeniedError,
+    AuthorizationError,
+    MaintananceError,
+    TokenKeyError,
+    TransportError,
+)
 
 
 class Token:
@@ -254,6 +260,30 @@ class Client:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        maintenance: bool = False,
+        **kwargs,
+    ) -> Response:
+        self._session.headers.update(urls.HEADERS)
+        kwargs.setdefault("proxies", self.proxy)
+        kwargs.setdefault("timeout", self._timeout)
+        try:
+            response = self._session.request(method, url, **kwargs)
+        except RequestException:
+            raise TransportError() from None
+
+        if response.status_code in (401, 403):
+            raise AccessDeniedError(response.status_code)
+        if maintenance and response.status_code == 503:
+            raise MaintananceError("Librus maintenance")
+        if response.status_code >= 400:
+            raise TransportError(response.status_code)
+        return response
+
     def get_token(
         self,
         username: str,
@@ -273,40 +303,30 @@ class Client:
             MaintananceError: If the API returns a maintenance status code or message.
             AuthorizationError: If there is an error during the authorization process.
         """
-        with self._session as s:
-            s.headers = urls.HEADERS
-            maint_check = s.get(self.API_URL, proxies=self.proxy)
-            if maint_check.status_code == 503:
-                message_list = maint_check.json().get("Message")
-                if not message_list:
-                    # during recent maintenance there were no messages (empty list)
-                    raise MaintananceError("maintenance")
-                raise MaintananceError(message_list[0]["description"])
+        self._request("GET", self.API_URL, maintenance=True)
+        self._request(
+            "GET", "https://synergia.librus.pl/loguj/portalRodzina?v=1774820765"
+        )
+        response = self._request(
+            "POST",
+            self.API_URL + "/OAuth/Authorization?client_id=46",
+            data={"action": "login", "login": username, "pass": password},
+        )
+        self._request(
+            "GET", "https://api.librus.pl/OAuth/Authorization/2FA?client_id=46"
+        )
+        if response.json()["status"] == "error":
+            raise AuthorizationError("Authorization failed")
 
-            s.get(
-                "https://synergia.librus.pl/loguj/portalRodzina?v=1774820765",
-            )
+        cookies: Dict = dict_from_cookiejar(self._session.cookies)
+        dzienniks = cookies.get("DZIENNIKSID")
+        sdzienniks = cookies.get("SDZIENNIKSID")
+        if dzienniks is None or sdzienniks is None:
+            raise AuthorizationError("Authorization cookies were not found")
 
-            response = s.post(
-                self.API_URL + "/OAuth/Authorization?client_id=46",
-                data={"action": "login", "login": username, "pass": password},
-                proxies=self.proxy,
-            )
-            s.get(
-                "https://api.librus.pl/OAuth/Authorization/2FA?client_id=46",
-            )
-            if response.json()["status"] == "error":
-                raise AuthorizationError(response.json()["errors"][0]["message"])
-
-            cookies: Dict = dict_from_cookiejar(s.cookies)
-            dzienniks = cookies.get("DZIENNIKSID")
-            sdzienniks = cookies.get("SDZIENNIKSID")
-            if dzienniks is None or sdzienniks is None:
-                raise AuthorizationError("Authorization cookies were not found")
-
-            token = Token(dzienniks=dzienniks, sdzienniks=sdzienniks)
-            self.token = token
-            return token
+        token = Token(dzienniks=dzienniks, sdzienniks=sdzienniks)
+        self.token = token
+        return token
 
     def refresh_oauth(self) -> str:
         """
@@ -319,17 +339,11 @@ class Client:
             AuthorizationError: If the token cannot be refreshed.
         """
         self.cookies.update(self.token.access_cookies())
-        with self._session as s:
-            s.headers = urls.HEADERS
-            s.cookies = self.cookies
-            response: Response = s.get(self.REFRESH_URL, proxies=self.proxy)
-            if response.status_code == 200:
-                oauth = response.cookies.get("oauth_token")
-                self.token.oauth = oauth
-                return oauth
-        raise AuthorizationError(
-            f"Error while refreshing oauth token {response.content}"
-        )
+        self._session.cookies.update(self.cookies)
+        response = self._request("GET", self.REFRESH_URL)
+        oauth = response.cookies.get("oauth_token")
+        self.token.oauth = oauth
+        return oauth
 
     def post(self, url: str, data: Dict[str, str]) -> Response:
         """
@@ -343,11 +357,8 @@ class Client:
             Response: The response from the server.
         """
         self.cookies.update(self.token.access_cookies())
-        with self._session as s:
-            s.headers = urls.HEADERS
-            s.cookies = self.cookies
-            response: Response = s.post(url, data=data, proxies=self.proxy)
-            return response
+        self._session.cookies.update(self.cookies)
+        return self._request("POST", url, data=data)
 
     def get(self, url: str) -> Response:
         """
@@ -360,11 +371,8 @@ class Client:
             Response: The response from the server.
         """
         self.cookies.update(self.token.access_cookies())
-        with self._session as s:
-            s.headers = urls.HEADERS
-            s.cookies = self.cookies
-            response: Response = s.get(url, proxies=self.proxy)
-            return response
+        self._session.cookies.update(self.cookies)
+        return self._request("GET", url)
 
 
 def new_client(

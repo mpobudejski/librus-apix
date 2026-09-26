@@ -1,11 +1,16 @@
 from logging import Logger
 from typing import Dict
 import pytest
-from requests import Session
+from requests import RequestException, Session
 from requests.models import Response
 from requests.sessions import RequestsCookieJar
 
 from librus_apix.client import Client, Token, new_client
+from librus_apix.exceptions import (
+    AccessDeniedError,
+    MaintananceError,
+    TransportError,
+)
 
 
 class TrackingSession(Session):
@@ -16,6 +21,27 @@ class TrackingSession(Session):
     def close(self):
         self.close_calls += 1
         super().close()
+
+
+class QueueSession(Session):
+    def __init__(self, *responses):
+        super().__init__()
+        self.responses = list(responses)
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def response(status_code=200, content=b"{}"):
+    result = Response()
+    result.status_code = status_code
+    result._content = content
+    return result
 
 
 def test_client_token(client: Client, log: Logger):
@@ -82,3 +108,94 @@ def test_timeout_configuration_is_public_and_per_client():
 
     assert client.connect_timeout == 2
     assert client.read_timeout == 7
+
+
+@pytest.mark.parametrize(
+    ("status_code", "maintenance", "error_type"),
+    [
+        (401, False, AccessDeniedError),
+        (403, False, AccessDeniedError),
+        (408, False, TransportError),
+        (429, False, TransportError),
+        (404, False, TransportError),
+        (500, False, TransportError),
+        (503, False, TransportError),
+        (503, True, MaintananceError),
+    ],
+)
+def test_http_errors_are_classified_without_private_response_data(
+    status_code, maintenance, error_type
+):
+    session = QueueSession(response(status_code, b"private body"))
+    client = Client(Token(), session=session, connect_timeout=2, read_timeout=7)
+
+    with pytest.raises(error_type) as caught:
+        client._request(
+            "GET", "https://private.invalid/student-id", maintenance=maintenance
+        )
+
+    assert "private" not in str(caught.value)
+    assert "student-id" not in str(caught.value)
+    if isinstance(caught.value, (AccessDeniedError, TransportError)):
+        assert caught.value.status_code == status_code
+    assert session.calls[0][2]["timeout"] == (2, 7)
+
+
+def test_explicit_request_timeout_overrides_client_default():
+    session = QueueSession(response())
+    client = Client(Token(), session=session, connect_timeout=2, read_timeout=7)
+
+    client._request("GET", "https://example.invalid", timeout=1)
+
+    assert session.calls[0][2]["timeout"] == 1
+
+
+def test_request_failures_are_sanitized():
+    session = QueueSession(RequestException("https://private.invalid/student-id"))
+    client = Client(Token(), session=session)
+
+    with pytest.raises(TransportError) as caught:
+        client._request("GET", "https://private.invalid/student-id")
+
+    assert caught.value.status_code is None
+    assert "private" not in str(caught.value)
+    assert len(session.calls) == 1
+
+
+def test_public_get_and_post_apply_default_timeout_without_closing_session():
+    session = TrackingSession()
+    queue = QueueSession(response(), response())
+    session.request = queue.request
+    client = Client(Token("first:second"), session=session)
+
+    client.get("https://example.invalid/get")
+    client.post("https://example.invalid/post", {"key": "value"})
+
+    assert [call[2]["timeout"] for call in queue.calls] == [(10, 30), (10, 30)]
+    assert session.close_calls == 0
+
+
+def test_refresh_oauth_uses_central_request_timeout():
+    oauth_response = response()
+    oauth_response.cookies.set("oauth_token", "oauth-value")
+    session = QueueSession(oauth_response)
+    client = Client(Token("first:second"), session=session, connect_timeout=2)
+
+    assert client.refresh_oauth() == "oauth-value"
+    assert session.calls[0][2]["timeout"] == (2, 30)
+
+
+def test_login_applies_timeout_to_each_http_operation():
+    session = QueueSession(
+        response(),
+        response(),
+        response(content=b'{"status": "ok"}'),
+        response(),
+    )
+    session.cookies.set("DZIENNIKSID", "first")
+    session.cookies.set("SDZIENNIKSID", "second")
+    client = Client(Token(), session=session, read_timeout=7)
+
+    assert repr(client.get_token("username", "password")) == "first:second"
+    assert len(session.calls) == 4
+    assert all(call[2]["timeout"] == (10, 7) for call in session.calls)
