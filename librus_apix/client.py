@@ -155,7 +155,7 @@ class Client:
 
     def __init__(
         self,
-        token: Token,
+        token: Optional[Token] = None,
         base_url: str = urls.BASE_URL,
         api_url: str = urls.API_URL,
         grades_url: str = urls.GRADES_URL,
@@ -176,11 +176,14 @@ class Client:
         gateway_api_attendance: str = urls.GATEWAY_API_ATTENDANCE,
         refresh_oauth_url: str = urls.REFRESH_OAUTH_URL,
         index_url: str = urls.INDEX_URL,
-        proxy: Dict[str, str] = {},
-        extra_cookies: RequestsCookieJar = RequestsCookieJar(),
+        proxy: Optional[Dict[str, str]] = None,
+        extra_cookies: Optional[RequestsCookieJar] = None,
+        session: Optional[Session] = None,
+        connect_timeout: float = 10,
+        read_timeout: float = 30,
     ):
-        self.token = token
-        self.proxy = proxy
+        self.token = token if token is not None else Token()
+        self.proxy = dict(proxy) if proxy is not None else {}
         self.BASE_URL = base_url
         self.API_URL = api_url
         self.GRADES_URL = grades_url
@@ -201,8 +204,15 @@ class Client:
         self.RECIPIENT_GROUPS_URL = recipient_groups_url
         self.REFRESH_URL = refresh_oauth_url
         self.INDEX_URL = index_url
-        self.cookies = extra_cookies
-        self._session = Session()
+        self.cookies = (
+            extra_cookies if extra_cookies is not None else RequestsCookieJar()
+        )
+        self._session = session if session is not None else Session()
+        self._owns_session = session is None
+        self._closed = False
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        self._timeout = (connect_timeout, read_timeout)
         """
         Initializes a new instance of Client.
 
@@ -228,6 +238,21 @@ class Client:
             refresh_oauth_url (str, optional): The URL of the refresh OAuth endpoint. Defaults to urls.REFRESH_OAUTH_URL.
             proxy (Dict[str, str], optional): A dictionary containing proxy settings. Defaults to an empty dictionary.
          """
+
+    @property
+    def session(self) -> Session:
+        return self._session
+
+    def close(self) -> None:
+        if not self._closed and self._owns_session:
+            self._session.close()
+        self._closed = True
+
+    def __enter__(self) -> "Client":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     def get_token(
         self,
@@ -343,7 +368,7 @@ class Client:
 
 
 def new_client(
-    token: Token = Token(),
+    token: Optional[Token] = None,
     base_url: str = urls.BASE_URL,
     api_url: str = urls.API_URL,
     grades_url: str = urls.GRADES_URL,
@@ -364,7 +389,11 @@ def new_client(
     gateway_api_attendance: str = urls.GATEWAY_API_ATTENDANCE,
     refresh_oauth_url: str = urls.REFRESH_OAUTH_URL,
     index_url: str = urls.INDEX_URL,
-    proxy: dict[str, str] = {},
+    proxy: Optional[dict[str, str]] = None,
+    extra_cookies: Optional[RequestsCookieJar] = None,
+    session: Optional[Session] = None,
+    connect_timeout: float = 10,
+    read_timeout: float = 30,
 ):
     """
     Creates a new instance of the Client class.
@@ -420,4 +449,8 @@ def new_client(
         refresh_oauth_url,
         index_url,
         proxy,
+        extra_cookies,
+        session,
+        connect_timeout,
+        read_timeout,
     )
