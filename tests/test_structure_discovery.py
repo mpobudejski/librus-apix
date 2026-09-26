@@ -1,0 +1,123 @@
+from pathlib import Path
+
+import pytest
+from bs4 import BeautifulSoup, Comment
+
+from tools import librus_structure_discovery as discovery
+from tools.librus_structure_discovery import check_tracked_paths, sanitize_html
+
+
+def test_sanitizer_removes_private_values_and_unsafe_markup():
+    raw = """
+    <html><head><style>.secret { color: red; }</style></head><body>
+    <!-- Jan Kowalski -->
+    <table class="decorated stretch student-987 Jan-Kowalski" data-owner="Jan Kowalski">
+      <tr class="line0"><td title="Jan Kowalski">Jan Kowalski</td>
+      <td><a href="/wiadomosci/1/5/987">Sekretny temat</a></td>
+      <td>01.02.2025</td><td>uczen@example.test</td></tr>
+    </table><script>token='secret'</script></body></html>
+    """
+
+    result = sanitize_html(raw, "messages")
+
+    for secret in (
+        "Jan",
+        "Kowalski",
+        "Sekretny",
+        "987",
+        "token",
+        "secret",
+        "example.test",
+        "data-owner",
+        "title=",
+    ):
+        assert secret not in result
+    assert "/fixture/message-1" in result
+    assert "2026-09-01" in result
+    soup = BeautifulSoup(result, "lxml")
+    assert soup.find("script") is None
+    assert soup.find("style") is None
+    assert soup.find(string=lambda value: isinstance(value, Comment)) is None
+    assert soup.table["class"] == ["decorated", "stretch"]
+
+
+def test_sanitizer_preserves_only_explicit_safe_labels_and_attributes():
+    raw = """
+    <table><tr><td colspan="2" rowspan="1" style="font-weight: bold; color: red"
+      aria-label="private">Pozytywna</td><td>Brak uwag</td><td>Dowolny tekst</td></tr></table>
+    """
+
+    result = sanitize_html(raw, "remarks")
+    soup = BeautifulSoup(result, "lxml")
+    cells = soup.select("td")
+
+    assert cells[0].get_text(strip=True) == "Pozytywna"
+    assert cells[1].get_text(strip=True) == "Brak uwag"
+    assert cells[2].get_text(strip=True) == "Remark text 1"
+    assert cells[0].attrs == {
+        "colspan": "2",
+        "rowspan": "1",
+        "style": "font-weight: bold",
+    }
+
+
+def test_sanitizer_output_is_deterministic():
+    raw = "<p>Teacher Name</p><a href='/private/123'>Subject</a>"
+
+    assert sanitize_html(raw, "messages") == sanitize_html(raw, "messages")
+
+
+@pytest.mark.parametrize(
+    ("path", "rule"),
+    [
+        (".librus-discovery/result.html", "discovery-artifact"),
+        ("capture.html.raw", "raw-html"),
+        (".env", "environment-file"),
+        ("config/.env.local", "environment-file"),
+    ],
+)
+def test_tracked_path_safety_rules_reject_private_artifacts(path, rule):
+    assert check_tracked_paths([path]) == [f"{rule}:{path}"]
+
+
+def test_tracked_path_safety_rules_accept_synthetic_fixture():
+    assert check_tracked_paths(["tests/fixtures/messages_current.html"]) == []
+
+
+def test_missing_cli_arguments_never_construct_client(monkeypatch):
+    monkeypatch.setattr(
+        discovery, "create_client", lambda: pytest.fail("client was constructed")
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        discovery.main([], {})
+
+    assert caught.value.code == 2
+
+
+def test_missing_credentials_return_before_constructing_client(tmp_path, monkeypatch):
+    env_file = tmp_path / "credentials.env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        discovery, "create_client", lambda: pytest.fail("client was constructed")
+    )
+    monkeypatch.setattr(discovery, "load_values", lambda _path: {})
+
+    result = discovery.main(
+        [
+            "--confirm-live",
+            "--env-file",
+            str(env_file),
+            "--account",
+            "primary",
+            "--output-dir",
+            ".librus-discovery",
+        ],
+        {},
+    )
+
+    assert result == 2
+
+
+def test_discovery_directory_is_git_ignored():
+    assert discovery.is_ignored(Path(".librus-discovery/messages_current.html"))
