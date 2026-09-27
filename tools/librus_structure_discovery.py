@@ -10,6 +10,12 @@ from bs4 import BeautifulSoup, Comment, Doctype, NavigableString, Tag
 
 from librus_apix import urls
 from librus_apix.client import Client, Token
+from librus_apix.exceptions import (
+    AccessDeniedError,
+    AuthorizationError,
+    MaintananceError,
+    TransportError,
+)
 
 SAFE_LABELS = {
     "Brak wiadomości",
@@ -124,6 +130,21 @@ def create_client() -> Client:
     return Client(Token())
 
 
+def classify_failure(stage: str, error: Exception) -> str:
+    if isinstance(error, MaintananceError):
+        return f"{stage}:maintenance"
+    if isinstance(error, AccessDeniedError):
+        return f"{stage}:access-denied:{error.status_code}"
+    if isinstance(error, TransportError):
+        status = error.status_code if error.status_code is not None else "no-status"
+        return f"{stage}:transport:{status}"
+    if isinstance(error, AuthorizationError):
+        return f"{stage}:authorization"
+    if stage == "authentication" and isinstance(error, (KeyError, ValueError)):
+        return f"{stage}:response-format"
+    return f"{stage}:unexpected"
+
+
 def load_values(path: Path) -> Mapping[str, str | None]:
     from dotenv import dotenv_values
 
@@ -194,7 +215,7 @@ def main(
         return _finish(2)
 
     client = create_client()
-    failure_stage = None
+    failure_category = None
     stage = "authentication"
     try:
         client.get_token(username, password)
@@ -210,16 +231,16 @@ def main(
         args.output_dir.mkdir(parents=False, exist_ok=True)
         messages_path.write_text(sanitized_messages, encoding="utf-8")
         remarks_path.write_text(sanitized_remarks, encoding="utf-8")
-    except Exception:
-        failure_stage = stage
+    except Exception as error:
+        failure_category = classify_failure(stage, error)
     finally:
         try:
             client.close()
-        except Exception:
-            if failure_stage is None:
-                failure_stage = "session-close"
-    if failure_stage is not None:
-        print(f"Discovery failed: {failure_stage}", file=sys.stderr)
+        except Exception as error:
+            if failure_category is None:
+                failure_category = classify_failure("session-close", error)
+    if failure_category is not None:
+        print(f"Discovery failed: {failure_category}", file=sys.stderr)
         return _finish(1)
     return _finish(0)
 

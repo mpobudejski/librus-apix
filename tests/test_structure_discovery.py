@@ -3,6 +3,12 @@ from pathlib import Path
 import pytest
 from bs4 import BeautifulSoup, Comment
 
+from librus_apix.exceptions import (
+    AccessDeniedError,
+    AuthorizationError,
+    MaintananceError,
+    TransportError,
+)
 from tools import librus_structure_discovery as discovery
 from tools.librus_structure_discovery import check_tracked_paths, sanitize_html
 
@@ -126,9 +132,9 @@ def test_discovery_directory_is_git_ignored():
 @pytest.mark.parametrize(
     ("failing_stage", "safe_category"),
     [
-        ("authentication", "authentication"),
-        ("messages", "messages-list"),
-        ("remarks", "remarks"),
+        ("authentication", "authentication:unexpected"),
+        ("messages", "messages-list:unexpected"),
+        ("remarks", "remarks:unexpected"),
     ],
 )
 def test_runtime_failure_reports_only_the_sanitized_stage(
@@ -190,3 +196,25 @@ def test_runtime_failure_reports_only_the_sanitized_stage(
     assert stderr == f"Discovery failed: {safe_category}\n"
     assert "private" not in stderr
     assert client.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (MaintananceError("private body"), "authentication:maintenance"),
+        (AccessDeniedError(403), "authentication:access-denied:403"),
+        (TransportError(503), "authentication:transport:503"),
+        (TransportError(), "authentication:transport:no-status"),
+        (AuthorizationError("private body"), "authentication:authorization"),
+        (KeyError("private response field"), "authentication:response-format"),
+        (ValueError("private response body"), "authentication:response-format"),
+        (RuntimeError("private details"), "authentication:unexpected"),
+    ],
+)
+def test_authentication_failure_category_never_contains_exception_data(
+    error, category
+):
+    result = discovery.classify_failure("authentication", error)
+
+    assert result == category
+    assert "private" not in result
