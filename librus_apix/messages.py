@@ -51,6 +51,14 @@ from librus_apix.exceptions import ParseError
 from librus_apix.helpers import no_access_check
 from dataclasses import dataclass
 import re
+from urllib.parse import urlparse
+
+
+MESSAGE_DATE = re.compile(
+    r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{4})"
+    r"(?:,?\s+\d{1,2}:\d{2})?$"
+)
+MESSAGE_PARSE_ERROR = "Error in parsing messages."
 
 
 @dataclass
@@ -228,9 +236,19 @@ def message_content(client: Client, content_url: str) -> MessageData:
 
 
 def _sanitize_href(href: str) -> str:
-    if len(href) > 4:
-        return href.split("/")[4]
-    return ""
+    path = urlparse(href).path.rstrip("/")
+    if not path:
+        return ""
+    return path.split("/")[-1]
+
+
+def _is_unread(*cells: Tag) -> bool:
+    for cell in cells:
+        classes = cell.get("class", [])
+        style = cell.get("style", "")
+        if "bolded" in classes or "font-weight: bold" in style:
+            return True
+    return False
 
 
 def parse_sent(message_soup: BeautifulSoup) -> List[Message]:
@@ -286,44 +304,63 @@ def parse(message_soup: BeautifulSoup) -> List[Message]:
     Returns:
         List[Message]: A list of Message objects representing received messages.
     """
-    msgs: List[Message] = []
-    hasAttachment = False
     soup = message_soup.find("table", attrs={"class": "decorated stretch"})
     if soup is None:
-        raise ParseError("Error in parsing messages.")
+        raise ParseError(MESSAGE_PARSE_ERROR)
     tbody = soup.find("tbody")
     if not isinstance(tbody, Tag):
-        raise ParseError("Error in parsing messages (tbody).")
-    tds = tbody.find_all("tr", attrs={"class": ["line0", "line1"]})
-    if tds[0].text.strip() == "Brak wiadomości":
+        raise ParseError(MESSAGE_PARSE_ERROR)
+
+    normalized_text = " ".join(tbody.stripped_strings)
+    if normalized_text == "Brak wiadomości":
         return []
-    for td in tds:
-        unread = False
-        hasAttachment = False
-        message_data: List[Tag] = td.find_all("td")
-        if len(message_data) < 6:
-            raise ParseError("Message data has less than 6 elements")
-        _tick, attachment, author, title, date, _trash = message_data[:6]
-        if attachment.find("img"):
-            hasAttachment = True
-        style = title.get("style")
-        if not isinstance(style, List) and not isinstance(style, str):
-            style = []
-        if "font-weight: bold" in style:
-            unread = True
 
-        author_a = author.find("a")
-        href = ""
-        if isinstance(author_a, Tag):
-            href = author_a.attrs.get("href", "")
-            href = _sanitize_href(href)
+    rows = tbody.find_all("tr", attrs={"class": ["line0", "line1"]})
+    if not rows:
+        raise ParseError(MESSAGE_PARSE_ERROR)
 
-        author = author.text
-        title = title.text
-        date = date.text
-        m = Message(author, title, date, href, unread, hasAttachment)
-        msgs.append(m)
-    return msgs
+    messages: List[Message] = []
+    for row in rows:
+        cells = row.find_all("td", recursive=False)
+        date_index = next(
+            (
+                index
+                for index, cell in enumerate(cells)
+                if MESSAGE_DATE.fullmatch(cell.get_text(" ", strip=True))
+            ),
+            None,
+        )
+        if date_index is None or date_index < 2:
+            raise ParseError(MESSAGE_PARSE_ERROR)
+
+        author_cell = cells[date_index - 2]
+        title_cell = cells[date_index - 1]
+        date_cell = cells[date_index]
+        message_anchor = author_cell.find("a", href=True)
+        href = (
+            _sanitize_href(str(message_anchor.get("href", "")))
+            if isinstance(message_anchor, Tag)
+            else ""
+        )
+        author = author_cell.get_text(" ", strip=True)
+        title = title_cell.get_text(" ", strip=True)
+        date = date_cell.get_text(" ", strip=True)
+        if not href or not author or not title or not date:
+            raise ParseError(MESSAGE_PARSE_ERROR)
+
+        messages.append(
+            Message(
+                author=author,
+                title=title,
+                date=date,
+                href=href,
+                unread=_is_unread(author_cell, title_cell, date_cell),
+                has_attachment=any(
+                    cell.find("img") is not None for cell in cells[: date_index - 2]
+                ),
+            )
+        )
+    return messages
 
 
 def get_max_page_number(client: Client) -> int:
@@ -341,13 +378,13 @@ def get_max_page_number(client: Client) -> int:
         pages = soup.select_one("div.pagination > span")
         if not pages:
             return 0
-        max_pages = pages.text.replace("\xa0", "")
-        max_pages_re = re.search("z[0-9]*", max_pages)
+        max_pages = pages.get_text(" ", strip=True).replace("\xa0", " ")
+        max_pages_re = re.search(r"\bz\s*(\d+)\b", max_pages)
         if max_pages_re is None:
             return 0
-        max_pages_number = int(max_pages_re.group(0).replace("z", ""))
-    except:
-        raise ParseError("Error while trying to get max page number.")
+        max_pages_number = int(max_pages_re.group(1))
+    except (AttributeError, TypeError, ValueError):
+        raise ParseError("Error while trying to get max page number.") from None
     return max_pages_number - 1
 
 
