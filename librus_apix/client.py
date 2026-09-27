@@ -266,6 +266,7 @@ class Client:
         url: str,
         *,
         maintenance: bool = False,
+        allow_unauthenticated: bool = False,
         **kwargs,
     ) -> Response:
         self._session.headers.update(urls.HEADERS)
@@ -276,6 +277,8 @@ class Client:
         except RequestException:
             raise TransportError() from None
 
+        if response.status_code == 401 and allow_unauthenticated:
+            return response
         if response.status_code in (401, 403):
             raise AccessDeniedError(response.status_code)
         if maintenance and response.status_code == 503:
@@ -303,7 +306,12 @@ class Client:
             MaintananceError: If the API returns a maintenance status code or message.
             AuthorizationError: If there is an error during the authorization process.
         """
-        self._request("GET", self.API_URL, maintenance=True)
+        self._request(
+            "GET",
+            self.API_URL,
+            maintenance=True,
+            allow_unauthenticated=True,
+        )
         self._request(
             "GET", "https://synergia.librus.pl/loguj/portalRodzina?v=1774820765"
         )

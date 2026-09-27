@@ -199,3 +199,29 @@ def test_login_applies_timeout_to_each_http_operation():
     assert repr(client.get_token("username", "password")) == "first:second"
     assert len(session.calls) == 4
     assert all(call[2]["timeout"] == (10, 7) for call in session.calls)
+
+
+def test_login_accepts_unauthenticated_maintenance_probe_challenge():
+    session = QueueSession(
+        response(401),
+        response(),
+        response(content=b'{"status": "ok"}'),
+        response(),
+    )
+    session.cookies.set("DZIENNIKSID", "first")
+    session.cookies.set("SDZIENNIKSID", "second")
+    client = Client(Token(), session=session)
+
+    assert repr(client.get_token("username", "password")) == "first:second"
+    assert len(session.calls) == 4
+
+
+def test_login_rejects_unauthorized_credential_submission():
+    session = QueueSession(response(401), response(), response(401))
+    client = Client(Token(), session=session)
+
+    with pytest.raises(AccessDeniedError) as caught:
+        client.get_token("username", "password")
+
+    assert caught.value.status_code == 401
+    assert len(session.calls) == 3
