@@ -5,7 +5,6 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Comment, Doctype, NavigableString, Tag
 
@@ -48,22 +47,6 @@ SAFE_CLASSES = {
     "stretch",
     "text",
 }
-
-
-def find_remarks_url(html: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
-    base = urlparse(urls.BASE_URL)
-    candidates = set()
-    for anchor in soup.find_all("a", href=True):
-        if anchor.get_text(" ", strip=True).casefold() != "uwagi".casefold():
-            continue
-        candidate = urljoin(urls.BASE_URL + "/", anchor["href"])
-        parsed = urlparse(candidate)
-        if parsed.scheme == base.scheme and parsed.netloc == base.netloc:
-            candidates.add(candidate)
-    if len(candidates) != 1:
-        raise ValueError("Remarks navigation is unavailable")
-    return candidates.pop()
 
 
 def sanitize_html(html: str, section: str) -> str:
@@ -226,8 +209,7 @@ def main(
     if args.output_dir != Path(".librus-discovery"):
         return _finish(2)
     messages_path = args.output_dir / "messages_current.html"
-    remarks_path = args.output_dir / "remarks_current.html"
-    if not is_ignored(messages_path) or not is_ignored(remarks_path):
+    if not is_ignored(messages_path):
         return _finish(2)
 
     client = create_client()
@@ -235,22 +217,13 @@ def main(
     stage = "authentication"
     try:
         client.get_token(username, password)
-        stage = "index-navigation"
-        index_html = client.get(client.INDEX_URL).text
-        stage = "remarks-navigation"
-        remarks_url = find_remarks_url(index_html)
         stage = "messages-list"
         messages_html = client.get(client.MESSAGE_URL).text
-        stage = "remarks"
-        remarks_html = client.get(remarks_url).text
         stage = "sanitize-messages"
         sanitized_messages = sanitize_html(messages_html, "messages")
-        stage = "sanitize-remarks"
-        sanitized_remarks = sanitize_html(remarks_html, "remarks")
-        stage = "write-fixtures"
+        stage = "write-fixture"
         args.output_dir.mkdir(parents=False, exist_ok=True)
         messages_path.write_text(sanitized_messages, encoding="utf-8")
-        remarks_path.write_text(sanitized_remarks, encoding="utf-8")
     except Exception as error:
         failure_category = classify_failure(stage, error)
     finally:
