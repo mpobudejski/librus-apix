@@ -27,7 +27,10 @@ SAFE_LABELS = {
     "Uwagi",
     "Wiadomości",
 }
-DATE = re.compile(r"^\d{1,2}[./-]\d{1,2}[./-]\d{4}(?:,?\s+\d{1,2}:\d{2})?$")
+DATE = re.compile(
+    r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{4})"
+    r"(?:,?\s+\d{1,2}:\d{2})?$"
+)
 ACCOUNT_ID = re.compile(r"^[a-z][a-z0-9_]*$")
 SAFE_CLASSES = {
     "big",

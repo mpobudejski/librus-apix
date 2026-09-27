@@ -73,6 +73,12 @@ def test_sanitizer_output_is_deterministic():
     assert sanitize_html(raw, "messages") == sanitize_html(raw, "messages")
 
 
+def test_sanitizer_normalizes_year_first_message_dates():
+    result = sanitize_html("<td>2026-09-03 12:30</td>", "messages")
+
+    assert BeautifulSoup(result, "lxml").td.get_text(strip=True) == "2026-09-01"
+
+
 @pytest.mark.parametrize(
     ("path", "rule"),
     [
