@@ -8,6 +8,8 @@ from requests.sessions import RequestsCookieJar
 from librus_apix.client import Client, Token, new_client
 from librus_apix.exceptions import (
     AccessDeniedError,
+    AdditionalAuthenticationError,
+    AuthorizationError,
     MaintananceError,
     TransportError,
 )
@@ -225,3 +227,62 @@ def test_login_rejects_unauthorized_credential_submission():
 
     assert caught.value.status_code == 401
     assert len(session.calls) == 3
+
+
+def test_login_reports_additional_authentication_without_private_response_data():
+    session = QueueSession(
+        response(401),
+        response(),
+        response(
+            content=(
+                b'{"status":"error","errors":[{"message":'
+                b'"Wymagana weryfikacja dwuetapowa: private student"}]}'
+            )
+        ),
+        response(),
+    )
+    client = Client(Token(), session=session)
+
+    with pytest.raises(AdditionalAuthenticationError) as caught:
+        client.get_token("username", "password")
+
+    assert type(caught.value) is AdditionalAuthenticationError
+    assert "private" not in str(caught.value)
+    assert "student" not in str(caught.value)
+
+
+def test_login_keeps_invalid_credentials_distinct_from_additional_authentication():
+    session = QueueSession(
+        response(401),
+        response(),
+        response(
+            content=b'{"status":"error","errors":[{"message":"Bad password"}]}'
+        ),
+        response(),
+    )
+    client = Client(Token(), session=session)
+
+    with pytest.raises(AuthorizationError) as caught:
+        client.get_token("username", "password")
+
+    assert type(caught.value) is AuthorizationError
+    assert str(caught.value) == "Authorization failed"
+
+
+@pytest.mark.parametrize("failing_request", range(4))
+def test_503_on_every_login_request_is_maintenance(failing_request):
+    responses = [
+        response(401),
+        response(),
+        response(content=b'{"status":"ok"}'),
+        response(),
+    ]
+    responses[failing_request] = response(503, b"private maintenance body")
+    session = QueueSession(*responses)
+    client = Client(Token(), session=session)
+
+    with pytest.raises(MaintananceError) as caught:
+        client.get_token("username", "password")
+
+    assert "private" not in str(caught.value)
+    assert len(session.calls) == failing_request + 1

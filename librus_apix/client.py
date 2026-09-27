@@ -31,6 +31,7 @@ from requests.utils import cookiejar_from_dict, dict_from_cookiejar
 import librus_apix.urls as urls
 from librus_apix.exceptions import (
     AccessDeniedError,
+    AdditionalAuthenticationError,
     AuthorizationError,
     MaintananceError,
     TokenKeyError,
@@ -313,17 +314,40 @@ class Client:
             allow_unauthenticated=True,
         )
         self._request(
-            "GET", "https://synergia.librus.pl/loguj/portalRodzina?v=1774820765"
+            "GET",
+            "https://synergia.librus.pl/loguj/portalRodzina?v=1774820765",
+            maintenance=True,
         )
         response = self._request(
             "POST",
             self.API_URL + "/OAuth/Authorization?client_id=46",
+            maintenance=True,
             data={"action": "login", "login": username, "pass": password},
         )
         self._request(
-            "GET", "https://api.librus.pl/OAuth/Authorization/2FA?client_id=46"
+            "GET",
+            "https://api.librus.pl/OAuth/Authorization/2FA?client_id=46",
+            maintenance=True,
         )
-        if response.json()["status"] == "error":
+        authorization = response.json()
+        if authorization["status"] == "error":
+            messages = [
+                error.get("message", "").casefold()
+                for error in authorization.get("errors", [])
+                if isinstance(error, dict) and isinstance(error.get("message"), str)
+            ]
+            additional_auth_markers = (
+                "captcha",
+                "2fa",
+                "weryfikacja dwuetapowa",
+                "dodatkowe uwierzytelnienie",
+            )
+            if any(
+                marker in message
+                for message in messages
+                for marker in additional_auth_markers
+            ):
+                raise AdditionalAuthenticationError()
             raise AuthorizationError("Authorization failed")
 
         cookies: Dict = dict_from_cookiejar(self._session.cookies)
