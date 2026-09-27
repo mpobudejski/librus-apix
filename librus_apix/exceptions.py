@@ -28,6 +28,11 @@ class AuthorizationError(Exception):
     pass
 
 
+class AdditionalAuthenticationError(AuthorizationError):
+    def __init__(self):
+        super().__init__("Additional authentication required")
+
+
 class ParseError(Exception):
     pass
 
