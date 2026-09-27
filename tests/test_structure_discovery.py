@@ -121,3 +121,72 @@ def test_missing_credentials_return_before_constructing_client(tmp_path, monkeyp
 
 def test_discovery_directory_is_git_ignored():
     assert discovery.is_ignored(Path(".librus-discovery/messages_current.html"))
+
+
+@pytest.mark.parametrize(
+    ("failing_stage", "safe_category"),
+    [
+        ("authentication", "authentication"),
+        ("messages", "messages-list"),
+        ("remarks", "remarks"),
+    ],
+)
+def test_runtime_failure_reports_only_the_sanitized_stage(
+    failing_stage, safe_category, tmp_path, monkeypatch, capsys
+):
+    class FakeResponse:
+        text = "<table><tr><td>Safe shape</td></tr></table>"
+
+    class StageFailureClient:
+        MESSAGE_URL = "https://private.invalid/messages"
+
+        def __init__(self):
+            self.close_calls = 0
+
+        def get_token(self, _username, _password):
+            if failing_stage == "authentication":
+                raise RuntimeError("private student data")
+
+        def get(self, url):
+            if failing_stage == "messages" and url == self.MESSAGE_URL:
+                raise RuntimeError("private student data")
+            if failing_stage == "remarks" and url != self.MESSAGE_URL:
+                raise RuntimeError("private student data")
+            return FakeResponse()
+
+        def close(self):
+            self.close_calls += 1
+
+    env_file = tmp_path / "credentials.env"
+    env_file.write_text("", encoding="utf-8")
+    client = StageFailureClient()
+    monkeypatch.setattr(discovery, "_tracked_paths", lambda: [])
+    monkeypatch.setattr(discovery, "is_ignored", lambda _path: True)
+    monkeypatch.setattr(
+        discovery,
+        "load_values",
+        lambda _path: {
+            "LIBRUS_ACCOUNT_PRIMARY_USERNAME": "private username",
+            "LIBRUS_ACCOUNT_PRIMARY_PASSWORD": "private password",
+        },
+    )
+    monkeypatch.setattr(discovery, "create_client", lambda: client)
+
+    result = discovery.main(
+        [
+            "--confirm-live",
+            "--env-file",
+            str(env_file),
+            "--account",
+            "primary",
+            "--output-dir",
+            ".librus-discovery",
+        ],
+        {},
+    )
+
+    stderr = capsys.readouterr().err
+    assert result == 1
+    assert stderr == f"Discovery failed: {safe_category}\n"
+    assert "private" not in stderr
+    assert client.close_calls == 1

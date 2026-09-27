@@ -194,19 +194,33 @@ def main(
         return _finish(2)
 
     client = create_client()
+    failure_stage = None
+    stage = "authentication"
     try:
         client.get_token(username, password)
+        stage = "messages-list"
         messages_html = client.get(client.MESSAGE_URL).text
+        stage = "remarks"
         remarks_html = client.get(REMARKS_URL).text
+        stage = "sanitize-messages"
         sanitized_messages = sanitize_html(messages_html, "messages")
+        stage = "sanitize-remarks"
         sanitized_remarks = sanitize_html(remarks_html, "remarks")
+        stage = "write-fixtures"
         args.output_dir.mkdir(parents=False, exist_ok=True)
         messages_path.write_text(sanitized_messages, encoding="utf-8")
         remarks_path.write_text(sanitized_remarks, encoding="utf-8")
     except Exception:
-        return _finish(1)
+        failure_stage = stage
     finally:
-        client.close()
+        try:
+            client.close()
+        except Exception:
+            if failure_stage is None:
+                failure_stage = "session-close"
+    if failure_stage is not None:
+        print(f"Discovery failed: {failure_stage}", file=sys.stderr)
+        return _finish(1)
     return _finish(0)
 
 
