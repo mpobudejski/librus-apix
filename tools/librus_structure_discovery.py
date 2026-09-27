@@ -5,6 +5,7 @@ import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Comment, Doctype, NavigableString, Tag
 
@@ -29,7 +30,6 @@ SAFE_LABELS = {
 }
 DATE = re.compile(r"^\d{1,2}[./-]\d{1,2}[./-]\d{4}(?:,?\s+\d{1,2}:\d{2})?$")
 ACCOUNT_ID = re.compile(r"^[a-z][a-z0-9_]*$")
-REMARKS_URL = urls.BASE_URL + "/przegladaj_uwagi/uczen"
 SAFE_CLASSES = {
     "big",
     "bolded",
@@ -48,6 +48,22 @@ SAFE_CLASSES = {
     "stretch",
     "text",
 }
+
+
+def find_remarks_url(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+    base = urlparse(urls.BASE_URL)
+    candidates = set()
+    for anchor in soup.find_all("a", href=True):
+        if anchor.get_text(" ", strip=True).casefold() != "uwagi".casefold():
+            continue
+        candidate = urljoin(urls.BASE_URL + "/", anchor["href"])
+        parsed = urlparse(candidate)
+        if parsed.scheme == base.scheme and parsed.netloc == base.netloc:
+            candidates.add(candidate)
+    if len(candidates) != 1:
+        raise ValueError("Remarks navigation is unavailable")
+    return candidates.pop()
 
 
 def sanitize_html(html: str, section: str) -> str:
@@ -219,10 +235,14 @@ def main(
     stage = "authentication"
     try:
         client.get_token(username, password)
+        stage = "index-navigation"
+        index_html = client.get(client.INDEX_URL).text
+        stage = "remarks-navigation"
+        remarks_url = find_remarks_url(index_html)
         stage = "messages-list"
         messages_html = client.get(client.MESSAGE_URL).text
         stage = "remarks"
-        remarks_html = client.get(REMARKS_URL).text
+        remarks_html = client.get(remarks_url).text
         stage = "sanitize-messages"
         sanitized_messages = sanitize_html(messages_html, "messages")
         stage = "sanitize-remarks"
