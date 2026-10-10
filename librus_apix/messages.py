@@ -235,10 +235,14 @@ def message_content(client: Client, content_url: str) -> MessageData:
     )
 
 
-def _sanitize_href(href: str) -> str:
+def _sanitize_href(href: str, base_url: str | None = None) -> str:
     path = urlparse(href).path.rstrip("/")
     if not path:
         return ""
+    if base_url is not None:
+        base_path = urlparse(base_url).path.rstrip("/")
+        if path.startswith(base_path + "/"):
+            return path[len(base_path) + 1 :]
     return path.split("/")[-1]
 
 
@@ -294,12 +298,13 @@ def parse_sent(message_soup: BeautifulSoup) -> List[Message]:
     return msgs
 
 
-def parse(message_soup: BeautifulSoup) -> List[Message]:
+def parse(message_soup: BeautifulSoup, base_url: str | None = None) -> List[Message]:
     """
     Parses received messages from the message soup.
 
     Args:
         message_soup (BeautifulSoup): The BeautifulSoup object containing message data.
+        base_url (str | None): Inbox URL for preserving the relative message path.
 
     Returns:
         List[Message]: A list of Message objects representing received messages.
@@ -338,7 +343,7 @@ def parse(message_soup: BeautifulSoup) -> List[Message]:
         date_cell = cells[date_index]
         message_anchor = author_cell.find("a", href=True)
         href = (
-            _sanitize_href(str(message_anchor.get("href", "")))
+            _sanitize_href(str(message_anchor.get("href", "")), base_url)
             if isinstance(message_anchor, Tag)
             else ""
         )
@@ -405,7 +410,7 @@ def get_received(client: Client, page: int) -> List[Message]:
     }
     response = client.post(client.MESSAGE_URL, data=payload)
     soup = no_access_check(BeautifulSoup(response.text, "lxml"))
-    received_msgs = parse(soup)
+    received_msgs = parse(soup, base_url=client.MESSAGE_URL)
     return received_msgs
 
 

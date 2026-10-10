@@ -1,5 +1,6 @@
 from logging import Logger
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List
 
 import pytest
@@ -176,6 +177,32 @@ def test_received_message_with_seconds_in_date_is_parsed():
             has_attachment=False,
         )
     ]
+
+
+def test_received_links_keep_distinct_relative_paths_with_trailing_mode_segment():
+    # All names, IDs and URLs in this fixture are synthetic.
+    html = """
+    <table class="decorated stretch"><tbody>
+      <tr class="line0"><td></td><td></td>
+        <td><a href="/wiadomosci/1/5/message-a/r1">Nauczyciel A</a></td>
+        <td>Temat A</td><td>2030-01-02 12:30:45</td><td></td>
+      </tr>
+      <tr class="line1"><td></td><td></td>
+        <td><a href="/wiadomosci/1/5/message-b/r1">Nauczyciel B</a></td>
+        <td>Temat B</td><td>2030-01-02 13:45:50</td><td></td>
+      </tr>
+    </tbody></table>
+    """
+
+    class FakeClient:
+        MESSAGE_URL = "https://example.invalid/wiadomosci/1/5"
+
+        def post(self, _url, data=None, **_kwargs):
+            return SimpleNamespace(text=html)
+
+    received = get_received(FakeClient(), 0)
+
+    assert [item.href for item in received] == ["message-a/r1", "message-b/r1"]
 
 
 def test_message_row_with_a_missing_semantic_cell_is_rejected():
