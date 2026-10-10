@@ -51,7 +51,7 @@ from librus_apix.exceptions import ParseError
 from librus_apix.helpers import no_access_check
 from dataclasses import dataclass
 import re
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 
 MESSAGE_DATE = re.compile(
@@ -236,14 +236,29 @@ def message_content(client: Client, content_url: str) -> MessageData:
 
 
 def _sanitize_href(href: str, base_url: str | None = None) -> str:
-    path = urlparse(href).path.rstrip("/")
+    parsed = urlparse(href)
+    path = parsed.path.rstrip("/")
     if not path:
         return ""
-    if base_url is not None:
-        base_path = urlparse(base_url).path.rstrip("/")
-        if path.startswith(base_path + "/"):
-            return path[len(base_path) + 1 :]
-    return path.split("/")[-1]
+    if base_url is None:
+        return path.split("/")[-1]
+    base = urlparse(base_url)
+    if (parsed.scheme or parsed.netloc) and (
+        parsed.scheme != base.scheme or parsed.netloc != base.netloc
+    ):
+        return ""
+    base_path = base.path.rstrip("/")
+    if path.startswith(base_path + "/"):
+        path = path[len(base_path) + 1 :]
+    elif path.startswith("/"):
+        path = path[1:] if path.count("/") == 1 else ""
+    segments = path.split("/")
+    if any(
+        not segment or unquote(segment) in {".", ".."} or "/" in unquote(segment)
+        for segment in segments
+    ):
+        return ""
+    return path
 
 
 def _is_unread(*cells: Tag) -> bool:

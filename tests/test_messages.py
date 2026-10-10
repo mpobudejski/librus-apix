@@ -205,6 +205,57 @@ def test_received_links_keep_distinct_relative_paths_with_trailing_mode_segment(
     assert [item.href for item in received] == ["message-a/r1", "message-b/r1"]
 
 
+def test_received_relative_links_preserve_distinct_detail_paths():
+    html = """
+    <table class="decorated stretch"><tbody>
+      <tr class="line0"><td></td><td></td>
+        <td><a href="show/message-a/r1">Nauczyciel A</a></td>
+        <td>Temat A</td><td>2030-01-02 12:30:45</td><td></td>
+      </tr>
+      <tr class="line1"><td></td><td></td>
+        <td><a href="show/message-b/r1">Nauczyciel B</a></td>
+        <td>Temat B</td><td>2030-01-02 13:45:50</td><td></td>
+      </tr>
+    </tbody></table>
+    """
+
+    class FakeClient:
+        MESSAGE_URL = "https://example.invalid/wiadomosci/1/5"
+
+        def post(self, _url, data=None):
+            return SimpleNamespace(text=html)
+
+    assert [item.href for item in get_received(FakeClient(), 0)] == [
+        "show/message-a/r1", "show/message-b/r1"
+    ]
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "/other/show/message-a/r1",
+        "../show/message-a/r1",
+        "https://elsewhere.invalid/wiadomosci/1/5/show/message-a/r1",
+    ],
+)
+def test_received_links_outside_inbox_are_rejected(href):
+    html = f"""
+    <table class="decorated stretch"><tbody><tr class="line0">
+      <td></td><td></td><td><a href="{href}">Nauczyciel</a></td>
+      <td>Temat</td><td>2030-01-02 12:30:45</td><td></td>
+    </tr></tbody></table>
+    """
+
+    class FakeClient:
+        MESSAGE_URL = "https://example.invalid/wiadomosci/1/5"
+
+        def post(self, _url, data=None):
+            return SimpleNamespace(text=html)
+
+    with pytest.raises(ParseError, match="Error in parsing messages"):
+        get_received(FakeClient(), 0)
+
+
 def test_message_row_with_a_missing_semantic_cell_is_rejected():
     soup = BeautifulSoup(
         """
