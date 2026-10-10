@@ -56,7 +56,7 @@ from urllib.parse import urlparse
 
 MESSAGE_DATE = re.compile(
     r"^(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{4})"
-    r"(?:,?\s+\d{1,2}:\d{2})?$"
+    r"(?:,?\s+\d{1,2}:\d{2}(?::\d{2})?)?$"
 )
 MESSAGE_PARSE_ERROR = "Error in parsing messages."
 

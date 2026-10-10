@@ -152,6 +152,32 @@ def test_attachment_unread_and_trailing_slash_href_are_parsed():
     ]
 
 
+def test_received_message_with_seconds_in_date_is_parsed():
+    # Synthetic structure derived from local RAW without copying private data.
+    soup = BeautifulSoup(
+        """
+        <table class="decorated stretch"><tbody><tr class="line0">
+          <td></td><td></td>
+          <td><a href="/wiadomosci/odebrane/pokaz/message-7/">Nauczyciel</a></td>
+          <td><a href="/wiadomosci/odebrane/pokaz/message-7/">Temat</a></td>
+          <td>2030-01-02 12:30:45</td><td><a href="#"><img></a></td>
+        </tr></tbody></table>
+        """,
+        "lxml",
+    )
+
+    assert parse(soup) == [
+        Message(
+            author="Nauczyciel",
+            title="Temat",
+            date="2030-01-02 12:30:45",
+            href="message-7",
+            unread=False,
+            has_attachment=False,
+        )
+    ]
+
+
 def test_message_row_with_a_missing_semantic_cell_is_rejected():
     soup = BeautifulSoup(
         """
